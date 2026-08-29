@@ -1,6 +1,8 @@
 import streamlit as st
 import sqlite3
+from supabase import create_client, Client
 from datetime import datetime, timedelta
+import os
 
 # --- BADGE GENERATOR (SVG) ---
 def get_badge_svg(status, created_at_str):
@@ -9,12 +11,16 @@ def get_badge_svg(status, created_at_str):
     center = size / 2
     
     try:
-        created_at = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+        # Handle both string and datetime formats
+        if isinstance(created_at_str, str):
+            created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+        else:
+            created_at = created_at
     except:
         created_at = datetime.now()
         
     now = datetime.now()
-    diff_hours = (now - created_at).total_seconds() / 3600
+    diff_hours = (now - created_at.replace(tzinfo=None)).total_seconds() / 3600
     diff_days = diff_hours / 24
     
     if status in ['Completed Successfully', 'Unachievable/Incomplete', 'completed']:
@@ -43,51 +49,96 @@ def get_badge_svg(status, created_at_str):
             <text x="{center}" y="{center+4}" fill="#dc3545" font-size="10" font-weight="bold" text-anchor="middle">{int(diff_hours)}h</text>
         </svg>'''
 
+# --- SUPABASE CONNECTION ---
+@st.cache_resource
+def init_supabase():
+    """Initialize Supabase client"""
+    try:
+        supabase_url = st.secrets["supabase"]["url"]
+        supabase_key = st.secrets["supabase"]["key"]
+        supabase: Client = create_client(supabase_url, supabase_key)
+        return supabase
+    except Exception as e:
+        st.error(f"Error connecting to Supabase: {e}")
+        return None
 
-def init_db():
-    conn = sqlite3.connect('sjg_tasks.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS tasks 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  title TEXT NOT NULL, 
-                  parent_id INTEGER, 
-                  created_by TEXT DEFAULT 'Admin',
-                  status TEXT DEFAULT 'Active', 
-                  closure_reason TEXT, 
-                  created_at TEXT)''')
-    conn.commit()
-    conn.close()
+def get_all_tasks(supabase):
+    """Fetch all tasks from Supabase"""
+    try:
+        response = supabase.table("tasks").select("*").order("id", desc=True).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error fetching tasks: {e}")
+        return []
 
-def get_db():
-    conn = sqlite3.connect('sjg_tasks.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+def add_task(supabase, title, parent_id, created_by):
+    """Add a new task to Supabase"""
+    try:
+        data = {
+            "title": title,
+            "parent_id": parent_id,
+            "created_by": created_by,
+            "status": "Active",
+            "created_at": datetime.now().isoformat()
+        }
+        response = supabase.table("tasks").insert(data).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error adding task: {e}")
+        return None
+
+def update_task(supabase, task_id, updates):
+    """Update a task in Supabase"""
+    try:
+        response = supabase.table("tasks").update(updates).eq("id", task_id).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error updating task: {e}")
+        return None
+
+def close_task(supabase, task_id, status, reason):
+    """Close a task with strict protocol"""
+    try:
+        updates = {
+            "status": status,
+            "closure_reason": reason
+        }
+        response = supabase.table("tasks").update(updates).eq("id", task_id).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error closing task: {e}")
+        return None
 
 # --- APP UI ---
 st.set_page_config(page_title="SJG TASKS", layout="wide", page_icon="✅")
-init_db()
+
+# Initialize Supabase
+supabase = init_supabase()
+
+if supabase is None:
+    st.error("❌ Cannot connect to database. Please check your Streamlit Secrets configuration.")
+    st.stop()
 
 st.title("✅ SJG TASKS - Enterprise Portal")
 st.markdown("---")
 
-# Fixed the menu names to match exactly
-menu = st.sidebar.selectbox("Navigation", ["📊 Dashboard", "📋 All Tasks", "➕ Add New Task", "🔧 Fix Database"])
+menu = st.sidebar.selectbox("Navigation", [" Dashboard", "📋 All Tasks", " Add New Task"])
 
 # --- PAGE 1: DASHBOARD ---
 if menu == "📊 Dashboard":
-    st.header(" Dashboard Overview")
-    conn = get_db()
-    total_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-    active_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('Active', 'open')").fetchone()[0]
-    completed_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('Completed Successfully', 'Unachievable/Incomplete', 'completed')").fetchone()[0]
+    st.header("📊 Dashboard Overview")
+    
+    tasks = get_all_tasks(supabase)
+    
+    total_tasks = len(tasks)
+    active_tasks = len([t for t in tasks if t['status'] in ['Active', 'open']])
+    completed_tasks = len([t for t in tasks if t['status'] in ['Completed Successfully', 'Unachievable/Incomplete', 'completed']])
     
     completion_rate = 0
     if total_tasks > 0:
         completion_rate = round((completed_tasks / total_tasks) * 100, 1)
     
-    recent_tasks = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 5").fetchall()
-    status_breakdown = conn.execute("SELECT status, COUNT(*) as count FROM tasks GROUP BY status").fetchall()
-    conn.close()
+    recent_tasks = tasks[:5] if tasks else []
     
     col1, col2, col3, col4 = st.columns(4)
     with col1: st.metric(label="📋 Total Tasks", value=total_tasks)
@@ -116,7 +167,7 @@ if menu == "📊 Dashboard":
                     <div>
                         <div style="font-weight: bold;">{task['title']}</div>
                         <div style="font-size: 0.8em; color: #888;">
-                            {status_emoji} {task['status']} • {task['created_at'][:10]}
+                            {status_emoji} {task['status']} • {task['created_at'][:10] if task['created_at'] else 'N/A'}
                         </div>
                     </div>
                 </div>
@@ -124,17 +175,18 @@ if menu == "📊 Dashboard":
         else: st.info("No tasks yet.")
     with col_right:
         st.markdown("### 📊 Status Breakdown")
-        if status_breakdown:
-            status_data = {s[0]: s[1] for s in status_breakdown}
-            st.bar_chart(status_data)
+        if tasks:
+            status_counts = {}
+            for task in tasks:
+                status = task['status']
+                status_counts[status] = status_counts.get(status, 0) + 1
+            st.bar_chart(status_counts)
         else: st.info("No data yet.")
 
-# --- PAGE 2: ALL TASKS (Fixed the menu name match) ---
-elif menu == "📋 All Tasks":
+# --- PAGE 2: ALL TASKS ---
+elif menu == " All Tasks":
     st.header("Task Management")
-    conn = get_db()
-    tasks = conn.execute("SELECT * FROM tasks ORDER BY id DESC").fetchall()
-    conn.close()
+    tasks = get_all_tasks(supabase)
 
     if not tasks:
         st.info("No tasks yet. Go to '➕ Add New Task' to create one.")
@@ -143,135 +195,87 @@ elif menu == "📋 All Tasks":
         st.markdown("---")
         
         for task in tasks:
-            task_container = st.container()
-            with task_container:
+            with st.container():
                 col_badge, col_content = st.columns([0.1, 0.9])
                 with col_badge:
                     badge_svg = get_badge_svg(task['status'], task['created_at'])
                     st.markdown(badge_svg, unsafe_allow_html=True)
                 with col_content:
                     st.markdown(f"### Task #{task['id']}: {task['title']}")
-                    st.caption(f"Status: **{task['status']}** | Created: {task['created_at']} | By: {task['created_by']}")
+                    st.caption(f"Status: **{task['status']}** | Created: {task['created_at'][:10] if task['created_at'] else 'N/A'} | By: {task['created_by']}")
                     if task['parent_id']:
                         st.caption(f"Parent Task ID: {task['parent_id']}")
                     
                     st.markdown("---")
                     
-                    # --- EDIT TASK SECTION ---
+                    # EDIT TASK
                     st.markdown("#### ✏️ Edit Task Details")
-                    conn_loop = get_db()
-                    all_tasks_list = conn_loop.execute("SELECT id, title FROM tasks").fetchall()
+                    all_tasks = get_all_tasks(supabase)
+                    parent_options = [None] + [f"#{t['id']} - {t['title']}" for t in all_tasks if t['id'] != task['id']]
                     
-                    parent_options = [None] + [f"#{t['id']} - {t['title']}" for t in all_tasks_list if t['id'] != task['id']]
                     current_parent_str = None
                     if task['parent_id']:
-                        current_parent_str = f"#{task['parent_id']} - {next((t['title'] for t in all_tasks_list if t['id'] == task['parent_id']), 'Unknown')}"
-
+                        parent_task = next((t for t in all_tasks if t['id'] == task['parent_id']), None)
+                        if parent_task:
+                            current_parent_str = f"#{task['parent_id']} - {parent_task['title']}"
+                    
                     with st.form(key=f"edit_form_{task['id']}"):
                         new_title = st.text_input("Task Title", value=task['title'], key=f"edit_title_{task['id']}")
                         idx = parent_options.index(current_parent_str) if current_parent_str in parent_options else 0
                         new_parent = st.selectbox("Parent Task (Optional)", parent_options, index=idx, key=f"edit_parent_{task['id']}")
                         
-                        col_btn1, col_btn2 = st.columns(2)
-                        with col_btn1:
-                            edit_submitted = st.form_submit_button("💾 Save Changes", use_container_width=True)
-                        
-                        if edit_submitted:
-                            new_parent_id = None
-                            if new_parent:
-                                new_parent_id = int(new_parent.split(" - ")[0].replace("#", ""))
-                            
-                            conn_loop.execute("UPDATE tasks SET title=?, parent_id=? WHERE id=?", (new_title, new_parent_id, task['id']))
-                            conn_loop.commit()
-                            conn_loop.close()
+                        if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                            new_parent_id = int(new_parent.split(" - ")[0].replace("#", "")) if new_parent else None
+                            update_task(supabase, task['id'], {"title": new_title, "parent_id": new_parent_id})
                             st.success(f"✅ Task #{task['id']} updated successfully!")
                             st.rerun()
 
                     st.markdown("---")
 
-                    # --- CLOSE / RE-OPEN SECTION ---
+                    # CLOSE / RE-OPEN
                     if task['status'] not in ['Completed Successfully', 'Unachievable/Incomplete', 'completed']:
                         st.warning("⚠️ This task is currently Active/Open.")
                         with st.form(key=f"close_form_{task['id']}"):
                             st.markdown("**Strict Closure Protocol**")
                             reason = st.text_area("Mandatory Reason for Closure (Min 10 chars):", key=f"reason_{task['id']}")
                             status_choice = st.selectbox("Final Status:", ["Completed Successfully", "Unachievable/Incomplete"], key=f"status_{task['id']}")
-                            close_submitted = st.form_submit_button("🔒 Close Task", use_container_width=True)
                             
-                            if close_submitted:
+                            if st.form_submit_button(" Close Task", use_container_width=True):
                                 if len(reason.strip()) < 10:
                                     st.error("❌ Error: Reason must be at least 10 characters.")
                                 else:
-                                    conn_loop.execute("UPDATE tasks SET status=?, closure_reason=? WHERE id=?", (status_choice, reason, task['id']))
-                                    conn_loop.commit()
-                                    conn_loop.close()
+                                    close_task(supabase, task['id'], status_choice, reason)
                                     st.success(f"✅ Task closed as: {status_choice}")
                                     st.rerun()
                     else:
-                        st.success(f" Task is Closed: {task['status']}")
-                        if task['closure_reason']:
+                        st.success(f"🟢 Task is Closed: {task['status']}")
+                        if task.get('closure_reason'):
                             st.info(f"**Closure Reason:** {task['closure_reason']}")
                         
-                        # Re-open button
-                        if st.button("🔄 Re-open Task", key=f"reopen_{task['id']}"):
-                            conn_loop.execute("UPDATE tasks SET status='Active', closure_reason=NULL WHERE id=?", (task['id'],))
-                            conn_loop.commit()
-                            conn_loop.close()
+                        if st.button(" Re-open Task", key=f"reopen_{task['id']}"):
+                            update_task(supabase, task['id'], {"status": "Active", "closure_reason": None})
                             st.success("Task re-opened successfully!")
                             st.rerun()
                     
-                    conn_loop.close()
                 st.markdown("---")
 
 # --- PAGE 3: ADD NEW TASK ---
-elif menu == " Add New Task":
+elif menu == "➕ Add New Task":
     st.header("Create New Task")
-    conn = get_db()
-    all_tasks = conn.execute("SELECT id, title FROM tasks").fetchall()
-    conn.close()
+    all_tasks = get_all_tasks(supabase)
     
     parent_options = [None] + [f"#{t['id']} - {t['title']}" for t in all_tasks]
     
     with st.form(key="add_task_form"):
         title = st.text_input("Task Title", placeholder="e.g., Q3 Marketing Campaign")
         parent_choice = st.selectbox("Is this a Sub-task? (Optional)", parent_options)
-        submitted = st.form_submit_button("Create Task")
         
-        if submitted:
+        if st.form_submit_button("Create Task"):
             if not title.strip():
                 st.error("❌ Task title cannot be empty.")
             else:
                 parent_id = int(parent_choice.split(" - ")[0].replace("#", "")) if parent_choice else None
-                conn = get_db()
-                conn.execute("INSERT INTO tasks (title, parent_id, created_by, created_at, status) VALUES (?, ?, ?, ?, ?)",
-                             (title, parent_id, 'Admin', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'Active'))
-                conn.commit()
-                conn.close()
-                st.success(f"✅ Task '{title}' created successfully!")
-                st.rerun()
-
-# --- PAGE 4: FIX DATABASE ---
-elif menu == " Fix Database":
-    st.header("Database Diagnostics & Fix")
-    conn = get_db()
-    st.subheader("Current Status Values in Database:")
-    status_check = conn.execute("SELECT DISTINCT status FROM tasks").fetchall()
-    if status_check:
-        for s in status_check: st.write(f"- '{s[0]}'")
-    else: st.write("No tasks in database yet.")
-    
-    st.markdown("---")
-    if st.button("🔧 Fix All Tasks to 'Active' Status"):
-        conn.execute("UPDATE tasks SET status = 'Active' WHERE status IS NULL OR status = '' OR status = 'open'")
-        conn.commit()
-        st.success("✅ All tasks have been set to 'Active' status!")
-        st.rerun()
-    
-    st.markdown("---")
-    st.warning("⚠️ Dangerous Zone")
-    if st.button("🗑️ Delete ALL Tasks (Start Fresh)"):
-        conn.execute("DELETE FROM tasks")
-        conn.commit()
-        st.success("✅ All tasks deleted.")
-        st.rerun()
-    conn.close()
+                result = add_task(supabase, title, parent_id, 'Admin')
+                if result:
+                    st.success(f"✅ Task '{title}' created successfully!")
+                    st.rerun()
