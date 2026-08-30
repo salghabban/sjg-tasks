@@ -1,5 +1,4 @@
 import streamlit as st
-import sqlite3
 from supabase import create_client, Client
 from datetime import datetime, timedelta
 import os
@@ -11,7 +10,6 @@ def get_badge_svg(status, created_at_str):
     center = size / 2
     
     try:
-        # Handle both string and datetime formats
         if isinstance(created_at_str, str):
             created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
         else:
@@ -52,7 +50,6 @@ def get_badge_svg(status, created_at_str):
 # --- SUPABASE CONNECTION ---
 @st.cache_resource
 def init_supabase():
-    """Initialize Supabase client"""
     try:
         supabase_url = st.secrets["supabase"]["url"]
         supabase_key = st.secrets["supabase"]["key"]
@@ -63,7 +60,6 @@ def init_supabase():
         return None
 
 def get_all_tasks(supabase):
-    """Fetch all tasks from Supabase"""
     try:
         response = supabase.table("tasks").select("*").order("id", desc=True).execute()
         return response.data
@@ -72,23 +68,20 @@ def get_all_tasks(supabase):
         return []
 
 def add_task(supabase, title, parent_id, created_by):
-    """Add a new task to Supabase"""
     try:
         data = {
             "title": title,
             "parent_id": parent_id,
             "created_by": created_by,
-            "status": "Active",
-            "created_at": datetime.now().isoformat()
+            "status": "Active"
         }
         response = supabase.table("tasks").insert(data).execute()
         return response.data
     except Exception as e:
-        st.error(f"Error adding task: {e}")
+        st.error(f"Error adding task: {str(e)}")
         return None
 
 def update_task(supabase, task_id, updates):
-    """Update a task in Supabase"""
     try:
         response = supabase.table("tasks").update(updates).eq("id", task_id).execute()
         return response.data
@@ -97,7 +90,6 @@ def update_task(supabase, task_id, updates):
         return None
 
 def close_task(supabase, task_id, status, reason):
-    """Close a task with strict protocol"""
     try:
         updates = {
             "status": status,
@@ -122,7 +114,7 @@ if supabase is None:
 st.title("✅ SJG TASKS - Enterprise Portal")
 st.markdown("---")
 
-menu = st.sidebar.selectbox("Navigation", [" Dashboard", "📋 All Tasks", " Add New Task"])
+menu = st.sidebar.selectbox("Navigation", [" Dashboard", "📋 All Tasks", "➕ Add New Task"])
 
 # --- PAGE 1: DASHBOARD ---
 if menu == "📊 Dashboard":
@@ -184,7 +176,7 @@ if menu == "📊 Dashboard":
         else: st.info("No data yet.")
 
 # --- PAGE 2: ALL TASKS ---
-elif menu == " All Tasks":
+elif menu == "📋 All Tasks":
     st.header("Task Management")
     tasks = get_all_tasks(supabase)
 
@@ -240,7 +232,7 @@ elif menu == " All Tasks":
                             reason = st.text_area("Mandatory Reason for Closure (Min 10 chars):", key=f"reason_{task['id']}")
                             status_choice = st.selectbox("Final Status:", ["Completed Successfully", "Unachievable/Incomplete"], key=f"status_{task['id']}")
                             
-                            if st.form_submit_button(" Close Task", use_container_width=True):
+                            if st.form_submit_button("🔒 Close Task", use_container_width=True):
                                 if len(reason.strip()) < 10:
                                     st.error("❌ Error: Reason must be at least 10 characters.")
                                 else:
@@ -252,7 +244,7 @@ elif menu == " All Tasks":
                         if task.get('closure_reason'):
                             st.info(f"**Closure Reason:** {task['closure_reason']}")
                         
-                        if st.button(" Re-open Task", key=f"reopen_{task['id']}"):
+                        if st.button("🔄 Re-open Task", key=f"reopen_{task['id']}"):
                             update_task(supabase, task['id'], {"status": "Active", "closure_reason": None})
                             st.success("Task re-opened successfully!")
                             st.rerun()
