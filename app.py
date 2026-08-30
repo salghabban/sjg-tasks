@@ -1,7 +1,6 @@
 import streamlit as st
 from supabase import create_client, Client
-from datetime import datetime, timedelta
-import os
+from datetime import datetime
 
 # --- BADGE GENERATOR (SVG) ---
 def get_badge_svg(status, created_at_str):
@@ -11,6 +10,7 @@ def get_badge_svg(status, created_at_str):
     
     try:
         if isinstance(created_at_str, str):
+            # Handle Supabase date format
             created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
         else:
             created_at = created_at
@@ -18,7 +18,11 @@ def get_badge_svg(status, created_at_str):
         created_at = datetime.now()
         
     now = datetime.now()
-    diff_hours = (now - created_at.replace(tzinfo=None)).total_seconds() / 3600
+    # Remove timezone info for calculation if needed
+    if created_at.tzinfo is not None:
+        created_at = created_at.replace(tzinfo=None)
+        
+    diff_hours = (now - created_at).total_seconds() / 3600
     diff_days = diff_hours / 24
     
     if status in ['Completed Successfully', 'Unachievable/Incomplete', 'completed']:
@@ -69,12 +73,7 @@ def get_all_tasks(supabase):
 
 def add_task(supabase, title, parent_id, created_by):
     try:
-        data = {
-            "title": title,
-            "parent_id": parent_id,
-            "created_by": created_by,
-            "status": "Active"
-        }
+        data = {"title": title, "parent_id": parent_id, "created_by": created_by, "status": "Active"}
         response = supabase.table("tasks").insert(data).execute()
         return response.data
     except Exception as e:
@@ -91,10 +90,7 @@ def update_task(supabase, task_id, updates):
 
 def close_task(supabase, task_id, status, reason):
     try:
-        updates = {
-            "status": status,
-            "closure_reason": reason
-        }
+        updates = {"status": status, "closure_reason": reason}
         response = supabase.table("tasks").update(updates).eq("id", task_id).execute()
         return response.data
     except Exception as e:
@@ -103,77 +99,55 @@ def close_task(supabase, task_id, status, reason):
 
 # --- APP UI ---
 st.set_page_config(page_title="SJG TASKS", layout="wide", page_icon="✅")
-
-# Initialize Supabase
 supabase = init_supabase()
 
 if supabase is None:
-    st.error("❌ Cannot connect to database. Please check your Streamlit Secrets configuration.")
+    st.error("❌ Cannot connect to database.")
     st.stop()
 
 st.title("✅ SJG TASKS - Enterprise Portal")
 st.markdown("---")
 
-menu = st.sidebar.selectbox("Navigation", [" Dashboard", "📋 All Tasks", "➕ Add New Task"])
+# Fixed Menu Matching
+menu = st.sidebar.selectbox("Navigation", ["📊 Dashboard", "📋 All Tasks", "➕ Add New Task"])
 
-# --- PAGE 1: DASHBOARD ---
+# --- PAGE 1: DASHBOARD (Shows Only Active Tasks) ---
 if menu == "📊 Dashboard":
     st.header("📊 Dashboard Overview")
     
     tasks = get_all_tasks(supabase)
     
-    total_tasks = len(tasks)
-    active_tasks = len([t for t in tasks if t['status'] in ['Active', 'open']])
-    completed_tasks = len([t for t in tasks if t['status'] in ['Completed Successfully', 'Unachievable/Incomplete', 'completed']])
+    # Filter tasks
+    active_tasks_list = [t for t in tasks if t.get('status') in ['Active', 'open']]
+    completed_tasks_list = [t for t in tasks if t.get('status') in ['Completed Successfully', 'Unachievable/Incomplete', 'completed']]
     
-    completion_rate = 0
-    if total_tasks > 0:
-        completion_rate = round((completed_tasks / total_tasks) * 100, 1)
-    
-    recent_tasks = tasks[:5] if tasks else []
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1: st.metric(label="📋 Total Tasks", value=total_tasks)
-    with col2: st.metric(label="🔴 Active Tasks", value=active_tasks, delta=f"{active_tasks} pending")
-    with col3: st.metric(label="✅ Completed", value=completed_tasks, delta=f"{completion_rate}% rate")
-    with col4: st.metric(label="📊 Completion Rate", value=f"{completion_rate}%", delta="Overall progress")
-    
-    st.markdown("### 📈 Overall Progress")
-    if total_tasks > 0:
-        st.progress(completion_rate / 100)
-        st.caption(f"{completed_tasks} of {total_tasks} tasks completed")
-    else:
-        st.info("No tasks yet. Create your first task to see progress!")
+    # Metrics
+    col1, col2, col3 = st.columns(3)
+    col1.metric("📋 Total Tasks", len(tasks))
+    col2.metric(" Active Tasks", len(active_tasks_list))
+    col3.metric("✅ Completed Tasks", len(completed_tasks_list))
     
     st.markdown("---")
-    col_left, col_right = st.columns([2, 1])
-    with col_left:
-        st.markdown("### 🕐 Recent Tasks")
-        if recent_tasks:
-            for task in recent_tasks:
-                badge_svg = get_badge_svg(task['status'], task['created_at'])
-                status_emoji = "✅" if task['status'] in ['Completed Successfully', 'completed'] else "🔴"
-                st.markdown(f"""
-                <div style="display: flex; align-items: center; gap: 10px; padding: 10px; background-color: #1e1e1e; border-radius: 8px; margin-bottom: 8px;">
-                    {badge_svg}
-                    <div>
-                        <div style="font-weight: bold;">{task['title']}</div>
-                        <div style="font-size: 0.8em; color: #888;">
-                            {status_emoji} {task['status']} • {task['created_at'][:10] if task['created_at'] else 'N/A'}
-                        </div>
+    
+    # Show Active Tasks List
+    st.subheader("🔴 Active Tasks Requiring Attention")
+    if active_tasks_list:
+        for task in active_tasks_list:
+            badge_svg = get_badge_svg(task['status'], task['created_at'])
+            # Create a nice card for each active task
+            st.markdown(f"""
+            <div style="display: flex; align-items: center; gap: 15px; padding: 15px; background-color: #f8f9fa; border-radius: 10px; margin-bottom: 15px; border-left: 5px solid #dc3545;">
+                {badge_svg}
+                <div style="flex-grow: 1;">
+                    <div style="font-size: 1.2em; font-weight: bold; color: #333;">{task['title']}</div>
+                    <div style="font-size: 0.9em; color: #666;">
+                        Created: {task['created_at'][:10] if task['created_at'] else 'N/A'} | By: {task['created_by']}
                     </div>
                 </div>
-                """, unsafe_allow_html=True)
-        else: st.info("No tasks yet.")
-    with col_right:
-        st.markdown("### 📊 Status Breakdown")
-        if tasks:
-            status_counts = {}
-            for task in tasks:
-                status = task['status']
-                status_counts[status] = status_counts.get(status, 0) + 1
-            st.bar_chart(status_counts)
-        else: st.info("No data yet.")
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.success("🎉 Excellent! No active tasks. You are all caught up!")
 
 # --- PAGE 2: ALL TASKS ---
 elif menu == "📋 All Tasks":
@@ -181,7 +155,7 @@ elif menu == "📋 All Tasks":
     tasks = get_all_tasks(supabase)
 
     if not tasks:
-        st.info("No tasks yet. Go to '➕ Add New Task' to create one.")
+        st.info("No tasks yet. Go to ' Add New Task' to create one.")
     else:
         st.write(f"**Found {len(tasks)} task(s)**")
         st.markdown("---")
@@ -195,8 +169,6 @@ elif menu == "📋 All Tasks":
                 with col_content:
                     st.markdown(f"### Task #{task['id']}: {task['title']}")
                     st.caption(f"Status: **{task['status']}** | Created: {task['created_at'][:10] if task['created_at'] else 'N/A'} | By: {task['created_by']}")
-                    if task['parent_id']:
-                        st.caption(f"Parent Task ID: {task['parent_id']}")
                     
                     st.markdown("---")
                     
@@ -216,7 +188,7 @@ elif menu == "📋 All Tasks":
                         idx = parent_options.index(current_parent_str) if current_parent_str in parent_options else 0
                         new_parent = st.selectbox("Parent Task (Optional)", parent_options, index=idx, key=f"edit_parent_{task['id']}")
                         
-                        if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                        if st.form_submit_button(" Save Changes", use_container_width=True):
                             new_parent_id = int(new_parent.split(" - ")[0].replace("#", "")) if new_parent else None
                             update_task(supabase, task['id'], {"title": new_title, "parent_id": new_parent_id})
                             st.success(f"✅ Task #{task['id']} updated successfully!")
@@ -234,17 +206,17 @@ elif menu == "📋 All Tasks":
                             
                             if st.form_submit_button("🔒 Close Task", use_container_width=True):
                                 if len(reason.strip()) < 10:
-                                    st.error("❌ Error: Reason must be at least 10 characters.")
+                                    st.error(" Error: Reason must be at least 10 characters.")
                                 else:
                                     close_task(supabase, task['id'], status_choice, reason)
                                     st.success(f"✅ Task closed as: {status_choice}")
                                     st.rerun()
                     else:
-                        st.success(f"🟢 Task is Closed: {task['status']}")
+                        st.success(f" Task is Closed: {task['status']}")
                         if task.get('closure_reason'):
                             st.info(f"**Closure Reason:** {task['closure_reason']}")
                         
-                        if st.button("🔄 Re-open Task", key=f"reopen_{task['id']}"):
+                        if st.button(" Re-open Task", key=f"reopen_{task['id']}"):
                             update_task(supabase, task['id'], {"status": "Active", "closure_reason": None})
                             st.success("Task re-opened successfully!")
                             st.rerun()
